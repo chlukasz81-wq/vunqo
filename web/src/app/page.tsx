@@ -693,6 +693,23 @@ export default function BudgetPage() {
     [deleteEntry],
   );
 
+  const clearTestData = useCallback(() => {
+    setEntries([]);
+    setPendingInflows([]);
+    setRejectedInflows([]);
+    setSelectedDateIso(null);
+    setSelectedOperationId(null);
+    setOverdueSelection(null);
+    setEditingEntry(null);
+    setModal(null);
+    localStorage.removeItem(STORAGE_ENTRIES);
+    localStorage.removeItem(STORAGE_PENDING_INFLOWS);
+    localStorage.removeItem(STORAGE_REJECTED_INFLOWS);
+    setActionMessage(
+      "Wyczyszczono dane operacji. Kategorie i słowniki pozostały bez zmian.",
+    );
+  }, []);
+
   const acceptPendingInflows = useCallback((ids: string[]) => {
     const toAccept = pendingInflows.filter((p) => ids.includes(p.id));
     if (toAccept.length === 0) return;
@@ -1460,6 +1477,7 @@ export default function BudgetPage() {
           onDeleteIncomeSource={deleteIncomeSource}
           onConfirmCyclic={confirmCyclic}
           onDeleteEntry={deleteEntry}
+          onClearTestData={clearTestData}
         />
       )}
       {modal === "edit" && editingEntry && (

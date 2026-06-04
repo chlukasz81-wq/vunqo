@@ -40,89 +40,9 @@ function cell(
   return { amount, paymentStatus };
 }
 
-export const CALENDAR_COST_ROWS: CalendarRow[] = [
-  {
-    id: "cal-allegro",
-    label: "Allegro",
-    type: "koszt",
-    amounts: { 1: cell(400, "zapłacone") },
-  },
-  {
-    id: "cal-lokal",
-    label: "Lokal",
-    type: "koszt",
-    amounts: { 2: cell(500, "zapłacone") },
-  },
-  {
-    id: "cal-inne",
-    label: "Inne",
-    type: "koszt",
-    amounts: { 1: cell(200, "zapłacone") },
-  },
-  {
-    id: "cal-zus",
-    label: "ZUS",
-    type: "koszt",
-    amounts: { 10: cell(1800, "zapłacone") },
-  },
-  {
-    id: "cal-leasing",
-    label: "Leasing auta",
-    type: "koszt",
-    amounts: { 15: cell(1200, "do zapłaty") },
-  },
-  {
-    id: "cal-reklama",
-    label: "Reklama Allegro",
-    type: "koszt",
-    amounts: { 12: cell(450, "po terminie"), 20: cell(800, "do zapłaty") },
-  },
-  {
-    id: "cal-ovh",
-    label: "Serwer OVH",
-    type: "koszt",
-    amounts: { 22: cell(250, "do zapłaty") },
-  },
-  {
-    id: "cal-ksiegowosc",
-    label: "Księgowość",
-    type: "koszt",
-    amounts: { 25: cell(350, "przesunięte") },
-  },
-  {
-    id: "cal-cursor",
-    label: "Cursor",
-    type: "koszt",
-    amounts: { 1: cell(80, "zapłacone") },
-  },
-];
+export const CALENDAR_COST_ROWS: CalendarRow[] = [];
 
-export const CALENDAR_REVENUE_ROWS: CalendarRow[] = [
-  {
-    id: "cal-sprzedaz-allegro",
-    label: "Planowany wpływ Allegro",
-    type: "planowany wpływ",
-    amounts: {
-      1: cell(3000, "zapłacone"),
-      15: [
-        cell(1500, "wymaga potwierdzenia"),
-        cell(600, "wymaga potwierdzenia"),
-      ],
-    },
-  },
-  {
-    id: "cal-sprzedaz-sklep",
-    label: "Planowany wpływ ze sklepu",
-    type: "planowany wpływ",
-    amounts: { 2: cell(1500, "zapłacone"), 15: cell(1000, "do zapłaty") },
-  },
-  {
-    id: "cal-zwrot",
-    label: "Zwrot środków",
-    type: "planowany wpływ",
-    amounts: { 25: cell(380, "przesunięte") },
-  },
-];
+export const CALENDAR_REVENUE_ROWS: CalendarRow[] = [];
 
 export const CALENDAR_ALL_ROWS: CalendarRow[] = [
   ...CALENDAR_COST_ROWS,

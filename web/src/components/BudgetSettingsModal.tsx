@@ -51,6 +51,7 @@ export type BudgetSettingsModalProps = {
   ) => void;
   onConfirmCyclic: (entryId: string) => void;
   onDeleteEntry: (entryId: string) => void;
+  onClearTestData: () => void;
 };
 
 function SettingsShell({
@@ -106,6 +107,7 @@ export function BudgetSettingsModal({
   onDeleteIncomeSource,
   onConfirmCyclic,
   onDeleteEntry,
+  onClearTestData,
 }: BudgetSettingsModalProps) {
   const [activeTab, setActiveTab] = useState<TabId>("cost-categories");
 
@@ -211,7 +213,22 @@ export function BudgetSettingsModal({
       </div>
 
       <div className="border-t border-slate-200 px-6 py-3">
-        <div className="flex justify-end">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (
+                window.confirm(
+                  "Usunąć wszystkie operacje (koszty, wpływy, kolejka akceptacji)? Kategorie i nazwy kontrahentów pozostaną.",
+                )
+              ) {
+                onClearTestData();
+              }
+            }}
+            className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-800 hover:bg-rose-100"
+          >
+            Wyczyść dane testowe
+          </button>
           <button
             type="button"
             onClick={onClose}
