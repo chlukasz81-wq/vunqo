@@ -19,6 +19,17 @@ export type PeriodFilter =
   | "prev-month"
   | "custom";
 
+export const PERIOD_OPTIONS: { value: PeriodFilter; label: string }[] = [
+  { value: "today", label: "Dziś" },
+  { value: "7d", label: "7 dni" },
+  { value: "15d", label: "15 dni" },
+  { value: "30d", label: "30 dni" },
+  { value: "current-period", label: "Aktualny okres" },
+  { value: "current-month", label: "Bieżący miesiąc" },
+  { value: "prev-month", label: "Poprzedni miesiąc" },
+  { value: "custom", label: "Własny zakres dat" },
+];
+
 export type PaymentStatusFilter =
   | "wszystkie"
   | "do zapłaty"
@@ -210,6 +221,43 @@ export function matchesPaymentStatusFilter(
       return entry.paymentStatus === "wymaga potwierdzenia";
     default:
       return true;
+  }
+}
+
+export function formatAmountForClipboard(amount: number): string {
+  if (Number.isInteger(amount)) return String(amount);
+  return new Intl.NumberFormat("pl-PL", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+export function buildEditModalTransferCopyText(params: {
+  name: string;
+  invoiceRef?: string;
+  amount: number;
+  dueDate: string;
+}): string {
+  const lines = [`Nazwa: ${params.name.trim()}`];
+  const ref = params.invoiceRef?.trim();
+  if (ref) lines.push(`Tytuł: ${ref}`);
+  lines.push(`Kwota: ${formatAmountForClipboard(params.amount)} zł`);
+  lines.push(`Termin płatności: ${formatDisplayDate(params.dueDate)}`);
+  return lines.join("\n");
+}
+
+export async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
   }
 }
 
@@ -628,6 +676,10 @@ export function migrateLegacyEntry(value: unknown): BudgetEntry | null {
         : legacyStatus === "opłacona"
           ? raw.date
           : undefined,
+    originalDueDate:
+      typeof raw.originalDueDate === "string"
+        ? raw.originalDueDate
+        : undefined,
   };
 }
 

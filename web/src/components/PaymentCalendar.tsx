@@ -3,7 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { CalendarCellPayment, CalendarRow } from "@/data/calendar-mock";
 import type { BudgetEntry } from "@/data/budget-mock";
-import type { PeriodFilter } from "@/lib/budget-utils";
+import { PERIOD_OPTIONS, type PeriodFilter } from "@/lib/budget-utils";
 import {
   buildCalendarRowsFromEntries,
   computeDayTotals,
@@ -16,12 +16,22 @@ import {
   getVisibleColumnsForPeriod,
   isTodayColumn,
   isWeekendColumn,
+  mergeOverdueCostRowsIntoCalendar,
   sumColumn,
   type CalendarColumn,
   type CalendarRowFilter,
   type DayTotals,
 } from "@/lib/calendar-utils";
 import { getPeriodRange } from "@/lib/budget-utils";
+import {
+  getOverdueAmountTooltip,
+  getOverdueCosts,
+  getOverdueCostsForRowLabel,
+  getOverdueRowColumnTooltip,
+  getOverdueTotalColumnTooltip,
+  isOverdueCost,
+  sumOverdueAmount,
+} from "@/lib/overdue-utils";
 
 const ROW_FILTER_OPTIONS: { value: CalendarRowFilter; label: string }[] = [
   { value: "koszty", label: "Koszty" },
@@ -29,21 +39,14 @@ const ROW_FILTER_OPTIONS: { value: CalendarRowFilter; label: string }[] = [
   { value: "wszystko", label: "Wszystko" },
 ];
 
-const CALENDAR_PERIOD_OPTIONS: { value: PeriodFilter; label: string }[] = [
-  { value: "today", label: "Dziś" },
-  { value: "7d", label: "7 dni" },
-  { value: "15d", label: "15 dni" },
-  { value: "30d", label: "30 dni" },
-  { value: "current-period", label: "Aktualny okres" },
-  { value: "current-month", label: "Bieżący miesiąc" },
-  { value: "prev-month", label: "Poprzedni miesiąc" },
-  { value: "custom", label: "Własny zakres dat" },
-];
-
 const SOURCE_COL_CLASS =
   "sticky left-0 z-10 w-40 min-w-[10rem] border border-slate-200 bg-white px-2 py-2 text-left text-xs font-medium sm:text-sm";
 const SOURCE_COL_HEAD_CLASS =
   "sticky left-0 z-20 w-40 min-w-[10rem] border border-slate-200 bg-slate-50 px-2 py-2 text-xs font-semibold text-slate-600";
+const OVERDUE_COL_CLASS =
+  "sticky left-[10rem] z-10 w-16 min-w-[3.5rem] border border-slate-200 bg-rose-50/90 px-0.5 py-1.5 text-center";
+const OVERDUE_COL_HEAD_CLASS =
+  "sticky left-[10rem] z-20 w-16 min-w-[3.5rem] border border-rose-200 bg-rose-100 px-1 py-2 text-center text-xs font-semibold text-rose-800";
 const DAY_COL_CLASS =
   "w-14 min-w-[3rem] border border-slate-200 px-0.5 py-1.5 text-center";
 
@@ -80,6 +83,22 @@ function dayColumnSurfaceClasses(options: {
   return parts.join(" ");
 }
 
+export type CalendarEmptyCellPayload = {
+  rowType: CalendarRow["type"];
+  rowLabel: string;
+  dateIso: string;
+};
+
+export type CalendarOperationAmountPayload = {
+  entryId: string;
+  dateIso: string;
+  paymentCountInCell: number;
+};
+
+export type CalendarOverdueClickPayload =
+  | { scope: "all" }
+  | { scope: "row"; rowLabel: string };
+
 export type PaymentCalendarProps = {
   entries: BudgetEntry[];
   period: PeriodFilter;
@@ -91,9 +110,44 @@ export type PaymentCalendarProps = {
   selectedDateIso: string | null;
   selectedOperationId: string | null;
   onSelectDate: (dateIso: string) => void;
-  onSelectOperation: (entryId: string, dateIso: string) => void;
+  onOperationAmountClick: (payload: CalendarOperationAmountPayload) => void;
+  onEmptyCalendarCellClick: (payload: CalendarEmptyCellPayload) => void;
+  onOverdueColumnClick: (payload: CalendarOverdueClickPayload) => void;
+  overdueDetails?: ReactNode;
   dayOperations?: ReactNode;
 };
+
+function OverdueAmountCell({
+  amount,
+  tooltip,
+  onClick,
+}: {
+  amount: number;
+  tooltip: string | null;
+  onClick: () => void;
+}) {
+  return (
+    <td className={OVERDUE_COL_CLASS}>
+      <button
+        type="button"
+        title={tooltip ?? undefined}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        className="w-full cursor-pointer select-none rounded px-0.5 py-0.5 tabular-nums text-xs font-semibold text-rose-700 transition-colors hover:bg-rose-200/60 sm:text-sm"
+      >
+        {formatCellAmount(amount)}
+      </button>
+    </td>
+  );
+}
+
+function OverdueEmptyCell() {
+  return (
+    <td className={`${OVERDUE_COL_CLASS} text-xs text-slate-300`}>—</td>
+  );
+}
 
 function FilterChip({
   active,
@@ -122,35 +176,64 @@ function FilterChip({
 function CalendarCell({
   payments,
   rowType,
+  rowLabel,
   columnSelected,
   weekend,
   isToday,
   dateIso,
+  entriesById,
   onSelectDate,
-  onSelectOperation,
+  onOperationAmountClick,
+  onEmptyCalendarCellClick,
 }: {
   payments: CalendarCellPayment[];
   rowType: CalendarRow["type"];
+  rowLabel: string;
   columnSelected: boolean;
   weekend: boolean;
   isToday: boolean;
   dateIso: string;
+  entriesById: Map<string, BudgetEntry>;
   onSelectDate: (dateIso: string) => void;
-  onSelectOperation: (entryId: string, dateIso: string) => void;
+  onOperationAmountClick: (payload: CalendarOperationAmountPayload) => void;
+  onEmptyCalendarCellClick: (payload: CalendarEmptyCellPayload) => void;
 }) {
+  const hasOverduePayment =
+    rowType === "koszt" &&
+    payments.some((payment) => {
+      if (!payment.entryId) return payment.paymentStatus === "po terminie";
+      const entry = entriesById.get(payment.entryId);
+      return entry ? isOverdueCost(entry) : payment.paymentStatus === "po terminie";
+    });
+
   const surface = dayColumnSurfaceClasses({
     columnSelected,
     weekend,
     isToday,
+    overdue: hasOverduePayment,
   });
 
   if (payments.length === 0) {
     return (
-      <td className={`${DAY_COL_CLASS} text-slate-300 ${surface}`}>—</td>
+      <td className={`${DAY_COL_CLASS} p-0 ${surface}`}>
+        <button
+          type="button"
+          onClick={() =>
+            onEmptyCalendarCellClick({ rowType, rowLabel, dateIso })
+          }
+          className="group flex min-h-[2rem] w-full cursor-pointer items-center justify-center rounded-sm px-0.5 py-1.5 transition-colors hover:bg-sky-50/70"
+          aria-label={`Dodaj operację: ${rowLabel}`}
+        >
+          <span className="text-slate-300 group-hover:hidden">—</span>
+          <span className="hidden text-base font-medium leading-none text-sky-500 group-hover:inline">
+            +
+          </span>
+        </button>
+      </td>
     );
   }
 
-  const amountClass =
+  const amountClassBase =
     rowType === "koszt"
       ? "text-rose-700"
       : rowType === "rzeczywisty wpływ"
@@ -163,21 +246,38 @@ function CalendarCell({
         {payments.map((payment, index) => {
           const entryId = payment.entryId;
           const key = entryId ?? `cell-${index}`;
+          const entry = entryId ? entriesById.get(entryId) : undefined;
+          const overdue = entry ? isOverdueCost(entry) : payment.paymentStatus === "po terminie";
+          const tooltip = entry ? getOverdueAmountTooltip(entry) : null;
+          const amountClass = overdue
+            ? "font-semibold text-rose-800 hover:bg-rose-100/80"
+            : amountClassBase;
           return (
             <button
               key={key}
               type="button"
               disabled={!entryId}
-              onClick={() => {
+              title={tooltip ?? undefined}
+              onClick={(event) => {
+                event.stopPropagation();
                 if (entryId) {
-                  onSelectOperation(entryId, dateIso);
+                  onOperationAmountClick({
+                    entryId,
+                    dateIso,
+                    paymentCountInCell: payments.length,
+                  });
                 } else {
                   onSelectDate(dateIso);
                 }
               }}
-              className={`cursor-pointer select-none rounded px-0.5 tabular-nums text-xs font-medium hover:bg-sky-100/80 sm:text-sm ${amountClass} disabled:cursor-default disabled:hover:bg-transparent`}
+              className={`cursor-pointer select-none rounded px-0.5 tabular-nums text-xs font-medium sm:text-sm ${amountClass} disabled:cursor-default disabled:hover:bg-transparent`}
             >
               {formatCellAmount(payment.amount)}
+              {entry?.originalDueDate && (
+                <span className="mt-0.5 block text-[8px] font-medium uppercase leading-none text-rose-500">
+                  przen.
+                </span>
+              )}
             </button>
           );
         })}
@@ -212,11 +312,19 @@ export function PaymentCalendar({
   selectedDateIso,
   selectedOperationId: _selectedOperationId,
   onSelectDate,
-  onSelectOperation,
+  onOperationAmountClick,
+  onEmptyCalendarCellClick,
+  onOverdueColumnClick,
+  overdueDetails,
   dayOperations,
 }: PaymentCalendarProps) {
   const [rowFilter, setRowFilter] = useState<CalendarRowFilter>("wszystko");
   const today = getBrowserToday();
+
+  const entriesById = useMemo(
+    () => new Map(entries.map((entry) => [entry.id, entry])),
+    [entries],
+  );
 
   const visibleColumns = useMemo(
     () => getVisibleColumnsForPeriod(period, customStart, customEnd),
@@ -234,8 +342,17 @@ export function PaymentCalendar({
   );
 
   const allRows = useMemo(
-    () => buildCalendarRowsFromEntries(entries, periodRange),
+    () =>
+      mergeOverdueCostRowsIntoCalendar(
+        buildCalendarRowsFromEntries(entries, periodRange),
+        entries,
+      ),
     [entries, periodRange],
+  );
+
+  const totalOverdueAmount = useMemo(
+    () => sumOverdueAmount(getOverdueCosts(entries)),
+    [entries],
   );
 
   const costRowsAll = useMemo(
@@ -297,17 +414,31 @@ export function PaymentCalendar({
     [visibleColumns],
   );
 
+  const tableColSpan = visibleColumns.length + 2;
+
   const renderRows = (rows: CalendarRow[], sectionLabel: string) => (
     <>
       <tr className="bg-slate-100/90">
         <th
-          colSpan={visibleColumns.length + 1}
+          colSpan={tableColSpan}
           className="border border-slate-200 px-2 py-1.5 text-left text-xs font-semibold uppercase tracking-wide text-slate-500"
         >
           {sectionLabel}
         </th>
       </tr>
-      {rows.map((row) => (
+      {rows.map((row) => {
+        const rowOverdueAmount =
+          row.type === "koszt"
+            ? sumOverdueAmount(
+                getOverdueCostsForRowLabel(entries, row.label),
+              )
+            : 0;
+        const rowOverdueTooltip =
+          row.type === "koszt"
+            ? getOverdueRowColumnTooltip(row.label, entries)
+            : null;
+
+        return (
         <tr key={row.id}>
           <th
             scope="row"
@@ -321,21 +452,36 @@ export function PaymentCalendar({
           >
             {row.label}
           </th>
+          {row.type === "koszt" && rowOverdueAmount > 0 ? (
+            <OverdueAmountCell
+              amount={rowOverdueAmount}
+              tooltip={rowOverdueTooltip}
+              onClick={() =>
+                onOverdueColumnClick({ scope: "row", rowLabel: row.label })
+              }
+            />
+          ) : (
+            <OverdueEmptyCell />
+          )}
           {visibleColumns.map((column) => (
             <CalendarCell
               key={column.iso}
               dateIso={column.iso}
+              rowLabel={row.label}
+              entriesById={entriesById}
               payments={getPaymentsForCell(row, column.iso)}
               rowType={row.type}
               columnSelected={selectedDateIso === column.iso}
               weekend={isWeekendColumn(column)}
               isToday={isTodayColumn(column, today)}
               onSelectDate={onSelectDate}
-              onSelectOperation={onSelectOperation}
+              onOperationAmountClick={onOperationAmountClick}
+              onEmptyCalendarCellClick={onEmptyCalendarCellClick}
             />
           ))}
         </tr>
-      ))}
+        );
+      })}
     </>
   );
 
@@ -421,7 +567,7 @@ export function PaymentCalendar({
           <span className="shrink-0 text-xs font-medium uppercase tracking-wide text-slate-500">
             Okres:
           </span>
-          {CALENDAR_PERIOD_OPTIONS.map((opt) => (
+          {PERIOD_OPTIONS.map((opt) => (
             <FilterChip
               key={opt.value}
               active={isCalendarPeriodActive(period, opt.value)}
@@ -455,6 +601,7 @@ export function PaymentCalendar({
         </div>
       </div>
 
+      {overdueDetails ?? null}
       {dayOperations ?? null}
 
       <div className="overflow-x-auto p-3 sm:p-4">
@@ -465,6 +612,7 @@ export function PaymentCalendar({
           <thead>
             <tr className="bg-slate-50">
               <th className={SOURCE_COL_HEAD_CLASS}>Źródło</th>
+              <th className={OVERDUE_COL_HEAD_CLASS}>Zaległości</th>
               {visibleColumns.map(renderDayHeader)}
             </tr>
           </thead>
@@ -482,6 +630,19 @@ export function PaymentCalendar({
               >
                 SUMA
               </th>
+              {totalOverdueAmount > 0 ? (
+                <OverdueAmountCell
+                  amount={totalOverdueAmount}
+                  tooltip={getOverdueTotalColumnTooltip(entries)}
+                  onClick={() => onOverdueColumnClick({ scope: "all" })}
+                />
+              ) : (
+                <td
+                  className={`${OVERDUE_COL_CLASS} bg-slate-100 text-xs text-slate-300`}
+                >
+                  —
+                </td>
+              )}
               {visibleColumns.map((column) => {
                 const dayTotal = totalsByDate.get(column.iso);
                 const colSum = sumColumn(visibleRows, column.iso);
@@ -527,11 +688,6 @@ export function PaymentCalendar({
           </tbody>
         </table>
       </div>
-
-      <p className="border-t border-slate-100 px-4 pb-3 text-xs text-slate-500 sm:px-6">
-        Kliknij nagłówek dnia lub wiersz sumy, aby zobaczyć wszystkie operacje
-        z dnia. Kliknij kwotę w komórce, aby zobaczyć szczegóły jednej operacji.
-      </p>
     </section>
   );
 }

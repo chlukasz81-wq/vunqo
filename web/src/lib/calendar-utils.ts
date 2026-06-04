@@ -1,5 +1,5 @@
 import type { CalendarCellPayment, CalendarRow, CalendarRowType } from "@/data/calendar-mock";
-import type { BudgetEntry, PaymentStatus } from "@/data/budget-mock";
+import type { BudgetEntry, OperationType, PaymentStatus } from "@/data/budget-mock";
 import type { DateRange, PeriodFilter } from "@/lib/budget-utils";
 import {
   PAYMENT_STATUS_STYLES,
@@ -9,6 +9,11 @@ import {
   parseDate,
   startOfDay,
 } from "@/lib/budget-utils";
+import {
+  getCalendarCostRowLabel,
+  getOverdueCosts,
+  isOverdueCost,
+} from "@/lib/overdue-utils";
 
 export type CalendarRowFilter = "koszty" | "przychody" | "wszystko";
 
@@ -240,42 +245,44 @@ function entryInRange(entry: BudgetEntry, range: DateRange): boolean {
   return t >= range.start.getTime() && t <= range.end.getTime();
 }
 
-function isCalendarRowType(type: BudgetEntry["type"]): type is CalendarRowType {
-  return (
-    type === "koszt" ||
-    type === "planowany wpływ" ||
-    type === "rzeczywisty wpływ"
-  );
+function getCalendarRowType(type: OperationType): CalendarRowType | null {
+  if (type === "koszt") return "koszt";
+  if (type === "planowany wpływ") return "planowany wpływ";
+  if (type === "rzeczywisty wpływ") return "rzeczywisty wpływ";
+  return null;
 }
 
 export function buildCalendarRowsFromEntries(
   entries: BudgetEntry[],
   range: DateRange,
 ): CalendarRow[] {
-  const rangeEntries = entries.filter(
-    (e) => entryInRange(e, range) && isCalendarRowType(e.type),
-  );
   const byKey = new Map<string, CalendarRow>();
 
-  for (const entry of rangeEntries) {
+  for (const entry of entries) {
+    if (!entryInRange(entry, range)) continue;
+    const calendarType = getCalendarRowType(entry.type);
+    if (!calendarType) continue;
+
     const rowLabel =
-      entry.type === "koszt"
+      calendarType === "koszt"
         ? entry.costName?.trim() || entry.name
         : entry.name;
-    const key = `${entry.type}:${rowLabel}`;
+    const key = `${calendarType}:${rowLabel}`;
     let row = byKey.get(key);
     if (!row) {
       row = {
-        id: `cal-${entry.type}-${rowLabel.replace(/\s+/g, "-").toLowerCase()}`,
+        id: `cal-${calendarType}-${rowLabel.replace(/\s+/g, "-").toLowerCase()}`,
         label: rowLabel,
-        type: entry.type,
+        type: calendarType,
         amounts: {},
       };
       byKey.set(key, row);
     }
     const cell: CalendarCellPayment = {
       amount: entry.amount,
-      paymentStatus: entry.paymentStatus,
+      paymentStatus: isOverdueCost(entry)
+        ? "po terminie"
+        : entry.paymentStatus,
       entryId: entry.id,
     };
     const existing = row.amounts[entry.date];
@@ -289,6 +296,32 @@ export function buildCalendarRowsFromEntries(
   }
 
   return [...byKey.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/** Dodaje wiersze kosztów z samymi zaległościami (poza widocznym zakresem dat). */
+export function mergeOverdueCostRowsIntoCalendar(
+  rows: CalendarRow[],
+  entries: BudgetEntry[],
+  ref: Date = new Date(),
+): CalendarRow[] {
+  const overdue = getOverdueCosts(entries, ref);
+  const existingCostLabels = new Set(
+    rows.filter((r) => r.type === "koszt").map((r) => r.label),
+  );
+  const extra: CalendarRow[] = [];
+  for (const entry of overdue) {
+    const label = getCalendarCostRowLabel(entry);
+    if (existingCostLabels.has(label)) continue;
+    existingCostLabels.add(label);
+    extra.push({
+      id: `cal-koszt-${label.replace(/\s+/g, "-").toLowerCase()}`,
+      label,
+      type: "koszt",
+      amounts: {},
+    });
+  }
+  if (extra.length === 0) return rows;
+  return [...rows, ...extra].sort((a, b) => a.label.localeCompare(b.label, "pl"));
 }
 
 export function computeDayTotals(

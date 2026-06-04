@@ -21,11 +21,17 @@ import {
 const inputClass =
   "w-full rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200";
 
+export type ManualRealInflowInitial = {
+  date: string;
+  rowLabel: string;
+};
+
 export type ManualRealInflowModalProps = {
   portalReady: boolean;
   categories: BudgetCategory[];
   allCategories: BudgetCategory[];
   incomeSources: IncomeSource[];
+  initial?: ManualRealInflowInitial;
   onClose: () => void;
   onSubmit: (entry: BudgetEntry) => void;
   onAddCategory: (category: BudgetCategory) => void;
@@ -37,17 +43,15 @@ export function ManualRealInflowModal({
   categories,
   allCategories,
   incomeSources,
+  initial,
   onClose,
   onSubmit,
   onAddCategory,
   onAddIncomeSource,
 }: ManualRealInflowModalProps) {
-  const [date, setDate] = useState(getTodayDateInputValue);
-
-  useEffect(() => {
-    if (!portalReady) return;
-    setDate(getTodayDateInputValue());
-  }, [portalReady]);
+  const [date, setDate] = useState(
+    () => initial?.date ?? getTodayDateInputValue(),
+  );
   const [selectedSourceId, setSelectedSourceId] = useState(
     incomeSources[0]?.id ?? CUSTOM_INCOME_SOURCE_VALUE,
   );
@@ -61,6 +65,30 @@ export function ManualRealInflowModal({
     formatIncomeDescription(incomeSources[0]?.defaultDescription),
   );
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+
+  useEffect(() => {
+    if (!portalReady || initial) return;
+    setDate(getTodayDateInputValue());
+  }, [portalReady, initial]);
+
+  useEffect(() => {
+    if (!initial) return;
+    setDate(initial.date);
+    const source = findIncomeSourceByName(incomeSources, initial.rowLabel);
+    if (source) {
+      setSelectedSourceId(source.id);
+      setName(source.name);
+      setCategory(source.defaultCategory);
+      setInvoiceRef(formatIncomeDescription(source.defaultDescription));
+      setCustomSourceName("");
+    } else {
+      setSelectedSourceId(CUSTOM_INCOME_SOURCE_VALUE);
+      setCustomSourceName(initial.rowLabel);
+      setName(initial.rowLabel);
+      setCategory(categories[0]?.name ?? "");
+      setInvoiceRef("");
+    }
+  }, [initial, incomeSources, categories]);
 
   useEffect(() => {
     if (categories.length === 0) {

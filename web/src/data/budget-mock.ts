@@ -61,6 +61,8 @@ export interface BudgetEntry {
   invoiceRef: string;
   dueDate: string;
   paidDate?: string;
+  /** Termin przed przeniesieniem na dziś (przesunięte płatności). */
+  originalDueDate?: string;
 }
 
 /** Stała data odniesienia dla mocków (czerwiec 2026). */
@@ -414,5 +416,61 @@ export const MOCK_ENTRIES: BudgetEntry[] = [
     invoiceRef: "OVH VPS 05/2026",
     dueDate: "2026-05-30",
     paidDate: "2026-05-30",
+  },
+  {
+    id: "overdue-zus",
+    date: "2026-05-14",
+    name: "ZUS",
+    costName: "ZUS",
+    category: "ZUS i podatki",
+    type: "koszt",
+    amount: 1500,
+    cyclic: true,
+    cyclicStatus: "kwota potwierdzona",
+    paymentStatus: "do zapłaty",
+    invoiceRef: "ZUS 05/2026",
+    dueDate: "2026-05-14",
+  },
+  {
+    id: "overdue-us-pit",
+    date: "2026-05-20",
+    name: "Urząd Skarbowy",
+    costName: "Urząd Skarbowy",
+    category: "ZUS i podatki",
+    type: "koszt",
+    amount: 2500,
+    cyclic: true,
+    cyclicStatus: "kwota potwierdzona",
+    paymentStatus: "do zapłaty",
+    invoiceRef: "PIT5L 05/2026",
+    dueDate: "2026-05-20",
+  },
+  {
+    id: "overdue-us-vat",
+    date: "2026-05-25",
+    name: "Urząd Skarbowy",
+    costName: "Urząd Skarbowy",
+    category: "ZUS i podatki",
+    type: "koszt",
+    amount: 1500,
+    cyclic: true,
+    cyclicStatus: "kwota potwierdzona",
+    paymentStatus: "do zapłaty",
+    invoiceRef: "VAT 05/2026",
+    dueDate: "2026-05-25",
+  },
+  {
+    id: "overdue-ovh",
+    date: "2026-05-22",
+    name: "Serwer OVH",
+    costName: "Serwer OVH",
+    category: "Serwery i domeny",
+    type: "koszt",
+    amount: 99,
+    cyclic: true,
+    cyclicStatus: "wymaga potwierdzenia",
+    paymentStatus: "do zapłaty",
+    invoiceRef: "OVH VPS 05/2026",
+    dueDate: "2026-05-22",
   },
 ];

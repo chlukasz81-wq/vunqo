@@ -212,6 +212,12 @@ function OperationsTable({
                   </td>
                   <td className="whitespace-nowrap px-3 py-3 text-slate-700 sm:px-4">
                     {formatDisplayDate(entry.dueDate)}
+                    {entry.originalDueDate && (
+                      <span className="mt-0.5 block text-xs text-slate-500">
+                        Pierwotny termin:{" "}
+                        {formatDisplayDate(entry.originalDueDate)}
+                      </span>
+                    )}
                   </td>
                   {showPaidDate && (
                     <td className="whitespace-nowrap px-3 py-3 text-slate-700 sm:px-4">

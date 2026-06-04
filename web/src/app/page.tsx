@@ -44,9 +44,19 @@ import {
 import { formatIncomeDescription } from "@/lib/income-source-utils";
 import { ImportInflowsModal } from "@/components/ImportInflowsModal";
 import { ManualRealInflowModal } from "@/components/ManualRealInflowModal";
+import {
+  OverdueDetailsPanel,
+  type OverdueDetailsSelection,
+} from "@/components/OverdueDetailsPanel";
+import { OverduePaymentsPanel } from "@/components/OverduePaymentsPanel";
 import { PendingInflowsPanel } from "@/components/PendingInflowsPanel";
 import { PlanVsRealityTable } from "@/components/PlanVsRealityTable";
-import { PaymentCalendar } from "@/components/PaymentCalendar";
+import {
+  PaymentCalendar,
+  type CalendarEmptyCellPayload,
+  type CalendarOperationAmountPayload,
+  type CalendarOverdueClickPayload,
+} from "@/components/PaymentCalendar";
 import {
   DEFAULT_COST_NAMES,
   STORAGE_COST_NAMES,
@@ -88,6 +98,12 @@ import {
   sortIncomeSources,
 } from "@/lib/income-source-utils";
 import {
+  getOverdueCosts,
+  getOverdueCostsForRowLabel,
+  movePaymentToToday,
+  normalizeCostEntryOnSave,
+} from "@/lib/overdue-utils";
+import {
   buildCalendarRowsFromEntries,
   computeDayTotals,
   getVisibleColumnsForPeriod,
@@ -97,7 +113,10 @@ import {
   applyPaidStatus,
   applyUnpaidStatus,
   buildTableRows,
+  buildEditModalTransferCopyText,
   buildTransferCopyText,
+  copyTextToClipboard,
+  formatAmountForClipboard,
   createEntryId,
   defaultCustomRange,
   filterEntriesByPeriod,
@@ -106,21 +125,14 @@ import {
   formatDisplayDate,
   formatEntryTypeLabel,
   formatOperationTypeLabel,
-  getPeriodHint,
   getPeriodRange,
   getTodayDateInputValue,
-  getPlannedBalance,
-  getRealBalance,
   migrateLegacyEntry,
   operationTypeColorClass,
   pendingInflowToEntry,
   PAYMENT_STATUS_STYLES,
   setEntryPaymentStatus,
   sortEntries,
-  sumCosts,
-  sumPlanVsRealDifference,
-  sumPlannedInflows,
-  sumRealInflows,
   type OperationTypeFilter,
   type PaymentStatusFilter,
   type PeriodFilter,
@@ -212,17 +224,6 @@ const OPERATION_TYPE_FILTER_OPTIONS: {
   { value: "wpływ do akceptacji", label: "Wpływ do akceptacji" },
 ];
 
-const PERIOD_OPTIONS: { value: PeriodFilter; label: string }[] = [
-  { value: "today", label: "Dziś" },
-  { value: "7d", label: "7 dni" },
-  { value: "15d", label: "15 dni" },
-  { value: "30d", label: "30 dni" },
-  { value: "current-period", label: "Aktualny okres" },
-  { value: "current-month", label: "Bieżący miesiąc" },
-  { value: "prev-month", label: "Poprzedni miesiąc" },
-  { value: "custom", label: "Własny zakres dat" },
-];
-
 const CYCLIC_STATUS_STYLES: Record<CyclicStatus, string> = {
   "kwota potwierdzona": "bg-emerald-50 text-emerald-800 ring-emerald-200",
   "wymaga potwierdzenia": "bg-amber-50 text-amber-800 ring-amber-200",
@@ -236,6 +237,17 @@ type ModalKind =
   | "import"
   | "edit"
   | null;
+
+type CalendarCostPrefill = {
+  date: string;
+  dueDate: string;
+  rowLabel: string;
+};
+
+type CalendarIncomePrefill = {
+  date: string;
+  rowLabel: string;
+};
 
 const CUSTOM_COST_NAME_VALUE = "__custom__";
 
@@ -369,6 +381,12 @@ export default function BudgetPage() {
     useState<BudgetCategory[]>(DEFAULT_CATEGORIES);
   const [hydrated, setHydrated] = useState(false);
   const [modal, setModal] = useState<ModalKind>(null);
+  const [costModalPrefill, setCostModalPrefill] =
+    useState<CalendarCostPrefill | null>(null);
+  const [revenueModalPrefill, setRevenueModalPrefill] =
+    useState<CalendarIncomePrefill | null>(null);
+  const [manualRealModalPrefill, setManualRealModalPrefill] =
+    useState<CalendarIncomePrefill | null>(null);
   const [portalReady, setPortalReady] = useState(false);
   const [paymentStatusFilter, setPaymentStatusFilter] =
     useState<PaymentStatusFilter>("wszystkie");
@@ -386,6 +404,8 @@ export default function BudgetPage() {
   const [selectedOperationId, setSelectedOperationId] = useState<string | null>(
     null,
   );
+  const [overdueSelection, setOverdueSelection] =
+    useState<OverdueDetailsSelection | null>(null);
   const [historiaCategory, setHistoriaCategory] = useState("");
   const [historiaCostName, setHistoriaCostName] = useState("");
   const [costNames, setCostNames] = useState<CostName[]>(DEFAULT_COST_NAMES);
@@ -513,28 +533,81 @@ export default function BudgetPage() {
     [historiaFiltered, entries],
   );
 
-  const costsInPeriod = sumCosts(filtered);
-  const plannedInPeriod = sumPlannedInflows(filtered);
-  const realInPeriod = sumRealInflows(filtered);
-  const planVsRealDiff = sumPlanVsRealDifference(filtered);
-  const plannedBalance = getPlannedBalance(filtered);
-  const realBalance = getRealBalance(filtered);
-  const periodHint = getPeriodHint(period, range);
-
   const handleSelectDate = useCallback((dateIso: string) => {
     setSelectedDateIso(dateIso);
     setSelectedOperationId(null);
+    setOverdueSelection(null);
   }, []);
 
-  const handleSelectOperation = useCallback(
-    (operationId: string, dateIso: string) => {
-      setSelectedOperationId(operationId);
-      setSelectedDateIso(dateIso);
+  const handleOverdueColumnClick = useCallback(
+    (payload: CalendarOverdueClickPayload) => {
+      setOverdueSelection(payload);
+      setSelectedDateIso(null);
+      setSelectedOperationId(null);
     },
     [],
   );
 
-  const closeModal = useCallback(() => setModal(null), []);
+  const openEditEntry = useCallback((entry: BudgetEntry) => {
+    setEditingEntry(entry);
+    setModal("edit");
+  }, []);
+
+  const handleOperationAmountClick = useCallback(
+    ({
+      entryId,
+      dateIso,
+      paymentCountInCell,
+    }: CalendarOperationAmountPayload) => {
+      const entry = entries.find((e) => e.id === entryId);
+      if (!entry) return;
+
+      if (paymentCountInCell === 1) {
+        openEditEntry(entry);
+        return;
+      }
+
+      setSelectedDateIso(dateIso);
+      setSelectedOperationId(entryId);
+    },
+    [entries, openEditEntry],
+  );
+
+  const closeModal = useCallback(() => {
+    setModal(null);
+    setCostModalPrefill(null);
+    setRevenueModalPrefill(null);
+    setManualRealModalPrefill(null);
+  }, []);
+
+  const handleEmptyCalendarCellClick = useCallback(
+    ({ rowType, rowLabel, dateIso }: CalendarEmptyCellPayload) => {
+      if (rowType === "koszt") {
+        setCostModalPrefill({
+          date: dateIso,
+          dueDate: dateIso,
+          rowLabel,
+        });
+        setModal("cost");
+        return;
+      }
+      if (rowType === "planowany wpływ") {
+        setRevenueModalPrefill({ date: dateIso, rowLabel });
+        setModal("revenue");
+        return;
+      }
+      if (rowType === "rzeczywisty wpływ") {
+        setManualRealModalPrefill({ date: dateIso, rowLabel });
+        setModal("manualReal");
+      }
+    },
+    [],
+  );
+
+  const openCostModal = useCallback(() => {
+    setCostModalPrefill(null);
+    setModal("cost");
+  }, []);
 
   const addEntry = useCallback((entry: BudgetEntry) => {
     setEntries((prev) => sortEntries([...prev, entry]));
@@ -587,15 +660,38 @@ export default function BudgetPage() {
 
   const updateEntry = useCallback((updated: BudgetEntry) => {
     setEntries((prev) =>
-      sortEntries(prev.map((e) => (e.id === updated.id ? updated : e))),
+      sortEntries(
+        prev.map((e) =>
+          e.id === updated.id ? normalizeCostEntryOnSave(updated, e) : e,
+        ),
+      ),
     );
     setEditingEntry(null);
     setModal(null);
   }, []);
 
+  useEffect(() => {
+    if (!overdueSelection) return;
+    const list =
+      overdueSelection.scope === "all"
+        ? getOverdueCosts(entries)
+        : getOverdueCostsForRowLabel(entries, overdueSelection.rowLabel);
+    if (list.length === 0) setOverdueSelection(null);
+  }, [entries, overdueSelection]);
+
   const deleteEntry = useCallback((id: string) => {
     setEntries((prev) => prev.filter((e) => e.id !== id));
   }, []);
+
+  const deleteEntryFromModal = useCallback(
+    (id: string) => {
+      deleteEntry(id);
+      setEditingEntry(null);
+      setModal(null);
+      setSelectedOperationId((current) => (current === id ? null : current));
+    },
+    [deleteEntry],
+  );
 
   const acceptPendingInflows = useCallback((ids: string[]) => {
     const toAccept = pendingInflows.filter((p) => ids.includes(p.id));
@@ -780,6 +876,17 @@ export default function BudgetPage() {
     );
   }, []);
 
+  const moveEntryToToday = useCallback((entry: BudgetEntry) => {
+    setEntries((prev) =>
+      sortEntries(
+        prev.map((e) =>
+          e.id === entry.id ? movePaymentToToday(e) : e,
+        ),
+      ),
+    );
+    setActionMessage(`Przeniesiono płatność „${entry.name}” na dziś.`);
+  }, []);
+
   const markEntryUnpaid = useCallback((id: string) => {
     setEntries((prev) =>
       sortEntries(
@@ -796,11 +903,6 @@ export default function BudgetPage() {
         ),
       ),
     );
-  }, []);
-
-  const openEditEntry = useCallback((entry: BudgetEntry) => {
-    setEditingEntry(entry);
-    setModal("edit");
   }, []);
 
   const calendarDayTotals = useMemo(() => {
@@ -900,103 +1002,15 @@ export default function BudgetPage() {
           </h1>
         </header>
 
-        <section className="mb-8 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-          <h2 className="mb-3 text-sm font-semibold text-slate-700">Okres</h2>
-          <div className="flex flex-wrap gap-2">
-            {PERIOD_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setPeriod(opt.value)}
-                className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                  period === opt.value
-                    ? "bg-sky-600 text-white shadow-sm"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          {period === "custom" && (
-            <div className="mt-4 flex flex-wrap items-end gap-4">
-              <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Od
-                <input
-                  type="date"
-                  value={customStart}
-                  onChange={(e) => setCustomStart(e.target.value)}
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Do
-                <input
-                  type="date"
-                  value={customEnd}
-                  onChange={(e) => setCustomEnd(e.target.value)}
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-slate-900 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-200"
-                />
-              </label>
-            </div>
-          )}
-        </section>
-
-        <section className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <SummaryTile
-            label="Planowane wpływy w okresie"
-            value={formatCurrency(plannedInPeriod)}
-            hint={`${filtered.filter((e) => e.type === "planowany wpływ").length} pozycji · ${periodHint}`}
-            valueClass="text-emerald-700"
-          />
-          <SummaryTile
-            label="Rzeczywiste wpływy w okresie"
-            value={formatCurrency(realInPeriod)}
-            hint={`${filtered.filter((e) => e.type === "rzeczywisty wpływ").length} zaakceptowanych wpływów`}
-            valueClass="text-teal-700"
-          />
-          <SummaryTile
-            label="Różnica plan vs rzeczywistość"
-            value={
-              planVsRealDiff === 0
-                ? formatCurrency(0)
-                : planVsRealDiff > 0
-                  ? `+${formatCurrency(planVsRealDiff)}`
-                  : formatCurrency(planVsRealDiff)
-            }
-            hint="suma planowanych − suma rzeczywistych w okresie"
-            valueClass={
-              planVsRealDiff > 0
-                ? "text-rose-700"
-                : planVsRealDiff < 0
-                  ? "text-emerald-700"
-                  : "text-slate-700"
-            }
-          />
-          <SummaryTile
-            label="Koszty w okresie"
-            value={formatCurrency(costsInPeriod)}
-            hint={`${filtered.filter((e) => e.type === "koszt").length} kosztów`}
-            valueClass="text-rose-700"
-          />
-          <SummaryTile
-            label="Bilans planowany"
-            value={formatCurrency(plannedBalance)}
-            hint={`planowane ${formatCurrency(plannedInPeriod)} − koszty ${formatCurrency(costsInPeriod)}`}
-            valueClass={
-              plannedBalance >= 0 ? "text-emerald-700" : "text-rose-700"
-            }
-          />
-          <SummaryTile
-            label="Bilans rzeczywisty"
-            value={formatCurrency(realBalance)}
-            hint={`rzeczywiste ${formatCurrency(realInPeriod)} − koszty ${formatCurrency(costsInPeriod)}`}
-            valueClass={realBalance >= 0 ? "text-emerald-700" : "text-rose-700"}
-          />
-        </section>
+        <OverduePaymentsPanel
+          entries={entries}
+          onEditEntry={openEditEntry}
+          onMarkPaid={markEntryPaid}
+          onMoveToToday={moveEntryToToday}
+        />
 
         <section className="mb-4 flex flex-wrap items-center gap-3">
-          <ActionButton variant="rose" onClick={() => setModal("cost")}>
+          <ActionButton variant="rose" onClick={openCostModal}>
             Dodaj koszt
           </ActionButton>
           <AddInflowButton onClick={() => setAddInflowChoiceOpen(true)} />
@@ -1010,21 +1024,6 @@ export default function BudgetPage() {
           onDismiss={() => setActionMessage(null)}
         />
 
-        {pendingInflows.length > 0 && (
-          <section className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/50 px-4 py-3 shadow-sm sm:px-5">
-            <p className="text-sm font-medium text-amber-900">
-              Wpływy do akceptacji: {pendingInflows.length}
-            </p>
-            <button
-              type="button"
-              onClick={scrollToPendingSection}
-              className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-50"
-            >
-              Otwórz akceptację
-            </button>
-          </section>
-        )}
-
         <PaymentCalendar
           entries={entries}
           period={period}
@@ -1036,7 +1035,21 @@ export default function BudgetPage() {
           selectedDateIso={selectedDateIso}
           selectedOperationId={selectedOperationId}
           onSelectDate={handleSelectDate}
-          onSelectOperation={handleSelectOperation}
+          onOperationAmountClick={handleOperationAmountClick}
+          onEmptyCalendarCellClick={handleEmptyCalendarCellClick}
+          onOverdueColumnClick={handleOverdueColumnClick}
+          overdueDetails={
+            overdueSelection ? (
+              <OverdueDetailsPanel
+                selection={overdueSelection}
+                entries={entries}
+                onEditEntry={openEditEntry}
+                onMarkPaid={markEntryPaid}
+                onMoveToToday={moveEntryToToday}
+                onClose={() => setOverdueSelection(null)}
+              />
+            ) : null
+          }
           dayOperations={
             selectedDateIso != null ? (
               <DayOperationsPanel
@@ -1347,10 +1360,12 @@ export default function BudgetPage() {
           onClose={() => setAddInflowChoiceOpen(false)}
           onPlanned={() => {
             setAddInflowChoiceOpen(false);
+            setRevenueModalPrefill(null);
             setModal("revenue");
           }}
           onManual={() => {
             setAddInflowChoiceOpen(false);
+            setManualRealModalPrefill(null);
             setModal("manualReal");
           }}
           onImport={() => {
@@ -1361,10 +1376,16 @@ export default function BudgetPage() {
       )}
       {modal === "cost" && (
         <AddCostModal
+          key={
+            costModalPrefill
+              ? `cost-${costModalPrefill.date}-${costModalPrefill.rowLabel}`
+              : "cost-default"
+          }
           portalReady={portalReady}
           categories={costCategories}
           allCategories={categories}
           costNames={costNames}
+          initial={costModalPrefill ?? undefined}
           onClose={closeModal}
           onSubmit={addEntry}
           onAddCategory={addCategory}
@@ -1373,11 +1394,17 @@ export default function BudgetPage() {
       )}
       {modal === "revenue" && (
         <AddRevenueModal
+          key={
+            revenueModalPrefill
+              ? `revenue-${revenueModalPrefill.date}-${revenueModalPrefill.rowLabel}`
+              : "revenue-default"
+          }
           portalReady={portalReady}
           categories={revenueCategories}
           allCategories={categories}
           incomeSources={incomeSources}
           title="Dodaj planowany wpływ"
+          initial={revenueModalPrefill ?? undefined}
           onClose={closeModal}
           onSubmit={addEntry}
           onAddCategory={addCategory}
@@ -1386,10 +1413,16 @@ export default function BudgetPage() {
       )}
       {modal === "manualReal" && (
         <ManualRealInflowModal
+          key={
+            manualRealModalPrefill
+              ? `manual-${manualRealModalPrefill.date}-${manualRealModalPrefill.rowLabel}`
+              : "manual-default"
+          }
           portalReady={portalReady}
           categories={revenueCategories}
           allCategories={categories}
           incomeSources={incomeSources}
+          initial={manualRealModalPrefill ?? undefined}
           onClose={closeModal}
           onSubmit={addEntry}
           onAddCategory={addCategory}
@@ -1440,6 +1473,7 @@ export default function BudgetPage() {
             closeModal();
           }}
           onSubmit={updateEntry}
+          onDelete={deleteEntryFromModal}
           onAddCategory={addCategory}
         />
       )}
@@ -1521,28 +1555,6 @@ function EntryRowActions({
         copied={copyFeedbackId === entry.id}
         onCopied={() => onCopyFeedback(entry.id)}
       />
-    </div>
-  );
-}
-
-function SummaryTile({
-  label,
-  value,
-  hint,
-  valueClass,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  valueClass: string;
-}) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <p className="text-sm font-medium text-slate-600">{label}</p>
-      <p className={`mt-2 text-2xl font-bold tabular-nums ${valueClass}`}>
-        {value}
-      </p>
-      <p className="mt-1 text-xs text-slate-500">{hint}</p>
     </div>
   );
 }
@@ -1870,6 +1882,7 @@ function AddCostModal({
   categories,
   allCategories,
   costNames,
+  initial,
   onClose,
   onSubmit,
   onAddCategory,
@@ -1879,12 +1892,15 @@ function AddCostModal({
   categories: BudgetCategory[];
   allCategories: BudgetCategory[];
   costNames: CostName[];
+  initial?: CalendarCostPrefill;
   onClose: () => void;
   onSubmit: (entry: BudgetEntry) => void;
   onAddCategory: (category: BudgetCategory) => void;
   onAddCostName: (costName: CostName) => void;
 }) {
-  const [date, setDate] = useState(getTodayDateInputValue);
+  const [date, setDate] = useState(
+    () => initial?.date ?? getTodayDateInputValue(),
+  );
   const [selectedCostNameId, setSelectedCostNameId] = useState(
     costNames[0]?.id ?? CUSTOM_COST_NAME_VALUE,
   );
@@ -1897,7 +1913,9 @@ function AddCostModal({
   const [invoiceRef, setInvoiceRef] = useState(() =>
     formatTransferTitle(costNames[0]?.defaultTransferTitle),
   );
-  const [dueDate, setDueDate] = useState(getTodayDateInputValue);
+  const [dueDate, setDueDate] = useState(
+    () => initial?.dueDate ?? getTodayDateInputValue(),
+  );
   const [paymentStatus, setPaymentStatus] =
     useState<PaymentStatus>("do zapłaty");
   const [cyclic, setCyclic] = useState(costNames[0]?.cyclic ?? false);
@@ -1905,11 +1923,34 @@ function AddCostModal({
     useState<CyclicFrequency>("co miesiąc");
 
   useEffect(() => {
-    if (!portalReady) return;
+    if (!portalReady || initial) return;
     const today = getTodayDateInputValue();
     setDate(today);
     setDueDate(today);
-  }, [portalReady]);
+  }, [portalReady, initial]);
+
+  useEffect(() => {
+    if (!initial) return;
+    setDate(initial.date);
+    setDueDate(initial.dueDate);
+    setPaymentStatus("do zapłaty");
+    const cn = findCostNameByName(costNames, initial.rowLabel);
+    if (cn) {
+      setSelectedCostNameId(cn.id);
+      setName(cn.name);
+      setCategory(cn.defaultCategory);
+      setInvoiceRef(formatTransferTitle(cn.defaultTransferTitle));
+      setCyclic(cn.cyclic);
+      setCustomCostName("");
+    } else {
+      setSelectedCostNameId(CUSTOM_COST_NAME_VALUE);
+      setCustomCostName(initial.rowLabel);
+      setName(initial.rowLabel);
+      setCategory(categories[0]?.name ?? "");
+      setInvoiceRef("");
+      setCyclic(false);
+    }
+  }, [initial, costNames, categories]);
 
   useEffect(() => {
     if (categories.length === 0) {
@@ -2124,6 +2165,7 @@ function AddRevenueModal({
   allCategories,
   incomeSources,
   title,
+  initial,
   onClose,
   onSubmit,
   onAddCategory,
@@ -2134,12 +2176,15 @@ function AddRevenueModal({
   allCategories: BudgetCategory[];
   incomeSources: IncomeSource[];
   title: string;
+  initial?: CalendarIncomePrefill;
   onClose: () => void;
   onSubmit: (entry: BudgetEntry) => void;
   onAddCategory: (category: BudgetCategory) => void;
   onAddIncomeSource: (source: IncomeSource) => void;
 }) {
-  const [date, setDate] = useState(getTodayDateInputValue);
+  const [date, setDate] = useState(
+    () => initial?.date ?? getTodayDateInputValue(),
+  );
   const [selectedSourceId, setSelectedSourceId] = useState(
     incomeSources[0]?.id ?? CUSTOM_INCOME_SOURCE_VALUE,
   );
@@ -2155,9 +2200,28 @@ function AddRevenueModal({
   const operationType: OperationType = "planowany wpływ";
 
   useEffect(() => {
-    if (!portalReady) return;
+    if (!portalReady || initial) return;
     setDate(getTodayDateInputValue());
-  }, [portalReady]);
+  }, [portalReady, initial]);
+
+  useEffect(() => {
+    if (!initial) return;
+    setDate(initial.date);
+    const source = findIncomeSourceByName(incomeSources, initial.rowLabel);
+    if (source) {
+      setSelectedSourceId(source.id);
+      setName(source.name);
+      setCategory(source.defaultCategory);
+      setInvoiceRef(formatIncomeDescription(source.defaultDescription));
+      setCustomSourceName("");
+    } else {
+      setSelectedSourceId(CUSTOM_INCOME_SOURCE_VALUE);
+      setCustomSourceName(initial.rowLabel);
+      setName(initial.rowLabel);
+      setCategory(categories[0]?.name ?? "");
+      setInvoiceRef("");
+    }
+  }, [initial, incomeSources, categories]);
 
   useEffect(() => {
     if (categories.length === 0) {
@@ -2305,6 +2369,11 @@ function AddRevenueModal({
   );
 }
 
+type EditCopyField = "amount" | "title" | "full";
+
+const editCopyButtonClass =
+  "shrink-0 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-700 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-800";
+
 function EditEntryModal({
   portalReady,
   entry,
@@ -2312,6 +2381,7 @@ function EditEntryModal({
   allCategories,
   onClose,
   onSubmit,
+  onDelete,
   onAddCategory,
 }: {
   portalReady: boolean;
@@ -2320,6 +2390,7 @@ function EditEntryModal({
   allCategories: BudgetCategory[];
   onClose: () => void;
   onSubmit: (entry: BudgetEntry) => void;
+  onDelete: (id: string) => void;
   onAddCategory: (category: BudgetCategory) => void;
 }) {
   const [date, setDate] = useState(entry.date);
@@ -2337,6 +2408,49 @@ function EditEntryModal({
   const [operationType, setOperationType] = useState<OperationType>(
     entry.type === "wpływ do akceptacji" ? "planowany wpływ" : entry.type,
   );
+  const [copiedField, setCopiedField] = useState<EditCopyField | null>(null);
+  const [copyToast, setCopyToast] = useState<string | null>(null);
+
+  const isCost = operationType === "koszt";
+
+  const showCopyFeedback = (field: EditCopyField) => {
+    setCopiedField(field);
+    setCopyToast("Skopiowano do schowka");
+    window.setTimeout(() => {
+      setCopiedField((current) => (current === field ? null : current));
+      setCopyToast((current) =>
+        current === "Skopiowano do schowka" ? null : current,
+      );
+    }, 2000);
+  };
+
+  const handleCopyAmount = async () => {
+    const parsed = parseFloat(amount.replace(",", "."));
+    if (Number.isNaN(parsed)) return;
+    await copyTextToClipboard(formatAmountForClipboard(parsed));
+    showCopyFeedback("amount");
+  };
+
+  const handleCopyTitle = async () => {
+    const title = invoiceRef.trim();
+    if (!title) return;
+    await copyTextToClipboard(title);
+    showCopyFeedback("title");
+  };
+
+  const handleCopyTransferDetails = async () => {
+    const parsed = parseFloat(amount.replace(",", "."));
+    if (Number.isNaN(parsed) || !name.trim()) return;
+    await copyTextToClipboard(
+      buildEditModalTransferCopyText({
+        name: name.trim(),
+        invoiceRef: invoiceRef.trim() || undefined,
+        amount: parsed,
+        dueDate,
+      }),
+    );
+    showCopyFeedback("full");
+  };
 
   const invoiceRefLabel =
     operationType === "koszt"
@@ -2375,6 +2489,11 @@ function EditEntryModal({
     };
     updated = setEntryPaymentStatus(updated, paymentStatus);
     onSubmit(updated);
+  };
+
+  const handleDelete = () => {
+    if (!window.confirm("Czy na pewno usunąć tę operację?")) return;
+    onDelete(entry.id);
   };
 
   return (
@@ -2429,15 +2548,27 @@ function EditEntryModal({
           onAddCategory={onAddCategory}
         />
         <FormField label="Kwota (zł)">
-          <input
-            type="number"
-            min="0.01"
-            step="0.01"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            className={inputClass}
-            required
-          />
+          <div className="flex gap-2">
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              className={`${inputClass} min-w-0 flex-1`}
+              required
+            />
+            {isCost && (
+              <button
+                type="button"
+                onClick={() => void handleCopyAmount()}
+                className={editCopyButtonClass}
+                title="Kopiuj kwotę"
+              >
+                {copiedField === "amount" ? "Skopiowano" : "Kopiuj"}
+              </button>
+            )}
+          </div>
         </FormField>
         <FormField label="Status płatności">
           <select
@@ -2455,13 +2586,42 @@ function EditEntryModal({
           </select>
         </FormField>
         <FormField label={invoiceRefLabel}>
-          <input
-            type="text"
-            value={invoiceRef}
-            onChange={(e) => setInvoiceRef(e.target.value)}
-            className={inputClass}
-          />
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={invoiceRef}
+              onChange={(e) => setInvoiceRef(e.target.value)}
+              className={`${inputClass} min-w-0 flex-1`}
+            />
+            {isCost && (
+              <button
+                type="button"
+                onClick={() => void handleCopyTitle()}
+                disabled={!invoiceRef.trim()}
+                className={`${editCopyButtonClass} disabled:cursor-not-allowed disabled:opacity-40`}
+                title="Kopiuj tytuł"
+              >
+                {copiedField === "title" ? "Skopiowano" : "Kopiuj"}
+              </button>
+            )}
+          </div>
         </FormField>
+        {isCost && (
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => void handleCopyTransferDetails()}
+              className="w-full rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-800 transition-colors hover:bg-sky-100"
+            >
+              {copiedField === "full"
+                ? "Skopiowano"
+                : "Kopiuj dane do przelewu"}
+            </button>
+            {copyToast && (
+              <p className="text-center text-xs text-emerald-700">{copyToast}</p>
+            )}
+          </div>
+        )}
         <FormField label="Termin płatności">
           <input
             type="date"
@@ -2471,6 +2631,12 @@ function EditEntryModal({
             required
           />
         </FormField>
+        {entry.originalDueDate && (
+          <p className="rounded-lg border border-rose-100 bg-rose-50/60 px-3 py-2 text-sm text-rose-900">
+            Pierwotny termin płatności:{" "}
+            {formatDisplayDate(entry.originalDueDate)}
+          </p>
+        )}
         <FormField label="Data zapłaty">
           <input
             type="date"
@@ -2498,20 +2664,29 @@ function EditEntryModal({
             )}
           </>
         )}
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            onClick={handleDelete}
+            className="rounded-lg border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50"
           >
-            Anuluj
+            Usuń operację
           </button>
-          <button
-            type="submit"
-            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700"
-          >
-            Zapisz
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Anuluj
+            </button>
+            <button
+              type="submit"
+              className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-700"
+            >
+              Zapisz
+            </button>
+          </div>
         </div>
       </form>
     </ModalShell>
